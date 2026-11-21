@@ -1,0 +1,10 @@
+{
+  "upstream_commit": "71ca1c127a4e7fe3387361f160c4890dbd427f66",
+  "reference_url": "https://github.com/valzevul/Theseus/blob/master/assets/tabBar.gif",
+  "upstream_file": "reference/Theseus/Sources/Theseus/Components/TheseusTabBar.swift",
+  "upstream_file_sha256": "20e29ef46313b5a96daea9b1146ce7726a392a91795c1d574b998fe22509d921",
+  "adapter_file": "src/NTKTabBarChrome.swift",
+  "adapter_sha256": "8babc1e2ed59dfa89695efbcae5e57f7e3c40ec4b9b9fe6328f357a87ebbf8db",
+  "compiled": false,
+  "runtime_verified": false
+}
