@@ -6,7 +6,7 @@ ROOT=Path(__file__).resolve().parents[1]
 BUILD=ROOT/'build'
 DIST=ROOT/'dist'
 PKG='com.ning.theseuskeyboard'
-VERSION='0.1.0-test1'
+VERSION='0.1.0-test2'
 DYLIB='TheseusKeyboard'
 
 def run(args):
@@ -51,9 +51,12 @@ def main():
  run(['xcrun','--sdk','iphoneos','metal','-mios-version-min=15.0','-c',shader,'-o',BUILD/'TheseusShaders.air'])
  run(['xcrun','--sdk','iphoneos','metallib',BUILD/'TheseusShaders.air','-o',bundle/'default.metallib'])
  assert (bundle/'default.metallib').stat().st_size>1024
- obj=BUILD/'NTKKeyboardAttachment.o'
- run(['xcrun','--sdk','iphoneos','clang','-arch','arm64e','-isysroot',sdk,'-miphoneos-version-min=15.0',
-  '-fobjc-arc','-fblocks','-O2','-Wall','-Wextra','-Werror','-c',ROOT/'src/NTKKeyboardAttachment.m','-o',obj])
+ objects=[]
+ for source in sorted((ROOT/'src').glob('*.m')):
+  obj=BUILD/(source.stem+'.o')
+  run(['xcrun','--sdk','iphoneos','clang','-arch','arm64e','-isysroot',sdk,'-miphoneos-version-min=15.0',
+   '-fobjc-arc','-fblocks','-O2','-Wall','-Wextra','-Werror','-c',source,'-o',obj])
+  objects.append(obj)
  selected=['Core/TheseusCapability.swift','Core/TheseusConfiguration.swift','Core/TheseusMaterialModel.swift',
   'Core/TheseusSettings.swift','Core/TheseusView.swift','Internal/DisplayLinkDriver.swift','Internal/FlexGlow.swift',
   'Internal/LensMorph.swift','Internal/NativeLens26.swift','Rendering/BackgroundCaptureDraw.swift',
@@ -68,7 +71,7 @@ def main():
   '-Xlinker','-rpath','-Xlinker','/usr/lib/swift','-o',dylib]
  for framework in ['UIKit','Foundation','QuartzCore','CoreGraphics','CoreVideo','Metal','MetalKit','Accelerate','IOSurface']:
   args+=['-framework',framework]
- run(args+sources+[obj])
+ run(args+sources+objects)
  architecture=check_macho(dylib)
  run(['codesign','--force','--sign','-',dylib])
  run(['codesign','--verify','--strict','--all-architectures',dylib])
