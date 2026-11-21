@@ -1,0 +1,17 @@
+{
+  "base_commit": "8b74cf8d0d9dfc70ca303dabeff77449b082d6cd",
+  "upstream_commit": "71ca1c127a4e7fe3387361f160c4890dbd427f66",
+  "reason": "Only content-window input, window coordinate conversion and drawable-presented callback; shader and material computations unchanged.",
+  "files": [
+    {
+      "path": "Core/TheseusView.swift",
+      "upstream_sha256": "569124416f8adbc03375062573d27d3d11335868d675f8222234efd47129ac24",
+      "integrated_sha256": "4f08a50e465f55af2657bc4b907656b7e80b5d64ce699d1c423e023edc77ec8a"
+    },
+    {
+      "path": "Rendering/TheseusRenderer.swift",
+      "upstream_sha256": "cba7c8ff8ef15c2db1b2230980f0bd07a7e9eda45cf482765cd7eb23a7a505fa",
+      "integrated_sha256": "95e4ca66aa9839a3e6467b8ccbe6658a8cdb839945e4f476d3106b002eaefff6"
+    }
+  ]
+}

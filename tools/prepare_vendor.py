@@ -3,6 +3,8 @@ import shutil, hashlib, json
 root=Path(__file__).resolve().parents[1]
 ref=root/'reference/Theseus'
 out=root/'vendor/Theseus'
+if (out/'INTEGRATION.json').exists():
+ raise SystemExit('Integration patches are present; do not overwrite the verified vendor tree')
 files=[]
 for directory in ['Core','Rendering','Internal','Animation']:
  files.extend(sorted((ref/'Sources/Theseus'/directory).glob('*.swift')))

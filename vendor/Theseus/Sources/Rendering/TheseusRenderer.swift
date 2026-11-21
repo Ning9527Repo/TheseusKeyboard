@@ -30,6 +30,9 @@ final class TheseusRenderer: NSObject {
     private let texturePool: TexturePool
     private var viewLayerCapture: ViewLayerCapture?
     private var backgroundCaptureDraw: BackgroundCaptureDraw?
+    weak var ntkWindowSource: UIWindow? { didSet { setNeedsRender() } }
+    var ntkFramePresented: ((UInt64) -> Void)?
+    private lazy var ntkWindowCapture = NTKWindowCapture(device: context.device)
     private let blurKernelCalculator: BlurKernelCalculator
     private let frostCoarseKernel: BlurKernelCalculator
     private let frostFillKernel: BlurKernelCalculator
@@ -335,10 +338,22 @@ final class TheseusRenderer: NSObject {
         }
 
         let viewFrame = metalLayer.frame
-        let captureRegion = calculateCaptureRegion(viewFrame: viewFrame, in: sourceView)
+        let captureRegion: CGRect
+        if let contentWindow = ntkWindowSource {
+            guard let host = hostView, let overlay = host.window,
+                  overlay !== contentWindow, overlay.screen === contentWindow.screen,
+                  overlay.windowScene === contentWindow.windowScene else { return false }
+            let rect = host.bounds.insetBy(dx: -drawPadding.x, dy: -drawPadding.y)
+            let inOverlay = host.convert(rect, to: overlay)
+            // UIView.convert alone is only valid within one UIWindow.
+            captureRegion = overlay.convert(inOverlay, to: contentWindow)
+        } else {
+            captureRegion = calculateCaptureRegion(viewFrame: viewFrame, in: sourceView)
+        }
 
         let renderScale = currentRefractionQuality.renderScale
 
+        let ntkCapturedAtMS = NTKNowMS()
         let sourceTexture: MTLTexture
         var capturedSurface: IOSurface? = nil
 
@@ -346,6 +361,12 @@ final class TheseusRenderer: NSObject {
         willCapture?()
         defer { didCapture?() }
 
+        if let contentWindow = ntkWindowSource {
+            guard let capture = ntkWindowCapture.capture(window: contentWindow,
+                    region: captureRegion, scale: renderScale) else { return false }
+            sourceTexture = capture.texture
+            lastBackdropColor = capture.meanColor
+        } else {
         switch configuration.captureMethod {
         case .surfaceBased:
             guard let capture = getViewLayerCapture(),
@@ -373,6 +394,7 @@ final class TheseusRenderer: NSObject {
             }
             sourceTexture = capture.texture
             lastBackdropColor = capture.meanColor
+        }
         }
 
         let itemTexture = drawItemLayer.flatMap { renderItemLayer(region: captureRegion, scale: renderScale, sourceView: sourceView, draw: $0) }
@@ -473,6 +495,12 @@ final class TheseusRenderer: NSObject {
 
         commandBuffer.encodeSignalEvent(frameEvent, value: frameValue)
 
+        if let presented = ntkFramePresented {
+            // addCompletedHandler only proves GPU completion. Do not clear native yet.
+            drawable.addPresentedHandler { _ in
+                DispatchQueue.main.async { presented(ntkCapturedAtMS) }
+            }
+        }
         let presentsWithTransaction = metalLayer.presentsWithTransaction
         if !presentsWithTransaction {
             commandBuffer.present(drawable)

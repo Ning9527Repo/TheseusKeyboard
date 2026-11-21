@@ -5,8 +5,8 @@
 import UIKit
 import QuartzCore
 
-/// The demo's background material only: no items, lens or selection control.
-/// Its host must contain BACKGROUND ONLY; never attach above keyboard keys.
+/// Original TabBar background material on an App-owned transparent overlay.
+/// The content window is a different tree; keyboard keys are never captured.
 @objc(NTKGlassBackground)
 public final class NTKGlassBackground: UIView {
     private let glass: TheseusView
@@ -53,23 +53,44 @@ public final class NTKGlassBackground: UIView {
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    /// Source must be a dedicated native background subtree, not a keyboard root.
-    /// Excluding this overlay leaves native background available for capture.
-    @objc(attachToBackgroundHost:sourceView:)
-    public func attach(to host: UIView, sourceView: UIView) {
+    @objc(makeSurface)
+    public static func makeSurface() -> NTKGlassBackground? {
         precondition(Thread.isMainThread)
-        guard host !== self, !host.isDescendant(of: self),
-              sourceView !== self, !sourceView.isDescendant(of: self) else { return }
-        if glass.sourceView !== sourceView { glass.sourceView = sourceView }
-        if backgroundHost !== host || superview !== host {
-            backgroundHost = host
-            host.addSubview(self)
+        let directory = String(cString: NTKResourceDirectory())
+        let path = URL(fileURLWithPath: directory).appendingPathComponent("TheseusKeyboard.bundle")
+        guard !directory.isEmpty, Bundle(url: path)?.url(forResource: "default", withExtension: "metallib") != nil else {
+            NTKRecordStage("resource-bundle-missing"); return nil
         }
+        guard MetalContext.shared != nil else {
+            NTKRecordStage("metal-context-unavailable"); return nil
+        }
+        let surface = NTKGlassBackground(frame: .zero)
+        surface.setSuspended(true)
+        return surface
+    }
+
+    @objc(attachToBackgroundHost:sourceWindow:)
+    public func attach(to host: UIView, sourceWindow: UIWindow) {
+        precondition(Thread.isMainThread)
+        guard let overlay = host.window, overlay !== sourceWindow,
+              overlay.windowScene === sourceWindow.windowScene else { return }
+        glass.ntkWindowSource = sourceWindow
+        glass.sourceView = sourceWindow
+        backgroundHost = host
+        if superview !== host { host.addSubview(self) }
         frame = host.bounds
         autoresizingMask = [.flexibleWidth, .flexibleHeight]
         setNeedsLayout()
-        scheduleRender()
+        NTKRecordStage("content-window-attached")
     }
+
+    @objc(setPresentedHandler:)
+    public func setPresentedHandler(_ handler: @escaping (UInt64) -> Void) {
+        glass.ntkFramePresented = handler
+    }
+
+    @objc(rendererReady)
+    public func rendererReady() -> Bool { glass.ntkRendererReady }
 
     @objc public func nativeBackgroundDidChange() {
         precondition(Thread.isMainThread)

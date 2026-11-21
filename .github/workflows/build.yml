@@ -24,6 +24,6 @@ jobs:
       - name: Upload test package and verification
         uses: actions/upload-artifact@v4
         with:
-          name: TheseusKeyboard-0.1.0-test1-arm64e
+          name: TheseusKeyboard-0.1.0-test2-arm64e
           path: dist/
           if-no-files-found: error

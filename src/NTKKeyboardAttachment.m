@@ -1,10 +1,11 @@
 // Copyright 2026 Ning. New keyboard integration, no historical project code.
 // Experimental: native backdrop capture requires iOS 17.2.1 runtime testing.
 #import <UIKit/UIKit.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
 #import <dlfcn.h>
-#import "NTKBridge.h"
+#import <mach/mach_time.h>
+#import <os/log.h>
+#import <unistd.h>
+#import "NTKRuntime.h"
 
 const char *NTKResourceDirectory(void) {
     static NSString *directory;
@@ -18,91 +19,52 @@ const char *NTKResourceDirectory(void) {
     return directory.fileSystemRepresentation ?: "";
 }
 
-static const char kNTKSurfaceKey;
-static BOOL gNTKInstalled = NO;
-static BOOL gNTKAttaching = NO; // Main-thread capture/layout reentrancy guard.
-static void (*gNTKOrigLayout)(id, SEL);
-static void (*gNTKOrigMove)(id, SEL);
-static void (*gNTKOrigStyle)(id, SEL, long long);
-
-typedef void (*NTKHookMessage)(Class, SEL, IMP, IMP *);
-
-// All static helpers are defined before their first use.
-static void NTKUpdateAttachment(UIVisualEffectView *backdrop, BOOL contentChanged) {
-    if (![NSThread isMainThread] || gNTKAttaching) return;
-    gNTKAttaching = YES;
-    @try {
-        UIView *surface = objc_getAssociatedObject(backdrop, &kNTKSurfaceKey);
-        if (!backdrop.window || backdrop.hidden || backdrop.alpha <= 0.01) {
-            if (surface) ((void (*)(id, SEL, BOOL))objc_msgSend)(surface, @selector(setSuspended:), YES);
-            return;
-        }
-        UIView *host = backdrop.contentView;
-        BOOL unsafeHost = !host || CGRectIsEmpty(host.bounds);
-        // Do not draw over any foreground content. This is a background-only host.
-        for (UIView *child in host.subviews) {
-            if (child != surface) unsafeHost = YES;
-        }
-        if (unsafeHost) {
-            if (surface) {
-                ((void (*)(id, SEL, BOOL))objc_msgSend)(surface, @selector(setSuspended:), YES);
-                [surface removeFromSuperview];
-            }
-            return;
-        }
-        if (!surface) {
-            Class surfaceClass = NSClassFromString(@"NTKGlassBackground");
-            if (!surfaceClass || ![surfaceClass isSubclassOfClass:[UIView class]]) return;
-            surface = [[surfaceClass alloc] initWithFrame:host.bounds];
-            if (!surface) return;
-            objc_setAssociatedObject(backdrop, &kNTKSurfaceKey, surface, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            contentChanged = YES;
-        }
-        if (surface.superview != host || !CGRectEqualToRect(surface.frame, host.bounds)) {
-            ((void (*)(id, SEL, id, id))objc_msgSend)(surface,
-                @selector(attachToBackgroundHost:sourceView:), host, backdrop);
-            contentChanged = YES;
-        }
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(surface, @selector(setSuspended:), NO);
-        if (contentChanged) {
-            ((void (*)(id, SEL))objc_msgSend)(surface, @selector(nativeBackgroundDidChange));
-        }
-    } @finally {
-        gNTKAttaching = NO;
-    }
+uint64_t NTKNowMS(void) {
+    static mach_timebase_info_data_t timebase;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ mach_timebase_info(&timebase); });
+    long double milliseconds = (long double)mach_continuous_time() * timebase.numer / timebase.denom / 1000000.0L;
+    return (uint64_t)milliseconds;
 }
 
-static void NTKLayout(id self, SEL cmd) {
-    if (gNTKOrigLayout) gNTKOrigLayout(self, cmd);
-    NTKUpdateAttachment(self, NO);
+static NSString *NTKClientName(NSString *bundle, NSString *prefix) {
+    if (![bundle isKindOfClass:NSString.class] || !bundle.length || bundle.length > 180) return nil;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+                              @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"];
+    if ([bundle rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return nil;
+    return [prefix stringByAppendingFormat:@".%@", bundle];
 }
+NSString *NTKClientLeaseName(NSString *bundle) { return NTKClientName(bundle, @NTK_LEASE_NAME); }
+NSString *NTKClientAckName(NSString *bundle) { return NTKClientName(bundle, @NTK_ACK_NAME); }
 
-static void NTKMove(id self, SEL cmd) {
-    if (gNTKOrigMove) gNTKOrigMove(self, cmd);
-    NTKUpdateAttachment(self, YES);
-}
-
-static void NTKStyle(id self, SEL cmd, long long style) {
-    if (gNTKOrigStyle) gNTKOrigStyle(self, cmd, style);
-    NTKUpdateAttachment(self, YES);
-}
-
-static void NTKInstall(void) {
-    if (gNTKInstalled) return;
-    Class cls = NSClassFromString(@"UIKBBackdropView");
-    NTKHookMessage hook = (NTKHookMessage)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
-    if (!cls || !hook || ![cls isSubclassOfClass:[UIVisualEffectView class]]) return;
-    if (!NSClassFromString(@"NTKGlassBackground")) return;
-    // Never reinstall and overwrite orig slots with our own wrappers.
-    gNTKInstalled = YES;
-    hook(cls, @selector(layoutSubviews), (IMP)NTKLayout, (IMP *)&gNTKOrigLayout);
-    hook(cls, @selector(didMoveToWindow), (IMP)NTKMove, (IMP *)&gNTKOrigMove);
-    SEL transition = NSSelectorFromString(@"transitionToStyle:");
-    if (class_getInstanceMethod(cls, transition)) {
-        hook(cls, transition, (IMP)NTKStyle, (IMP *)&gNTKOrigStyle);
+void NTKRecordStage(const char *stage) {
+    static os_log_t log;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ log = os_log_create("com.ning.theseuskeyboard", "lifecycle"); });
+    os_log_info(log, "%{public}s", stage ?: "unknown");
+    // Bounded per-process lifecycle trace; contains no pixels, text, app id or user data.
+    static NSString *tracePath;
+    static NSMutableArray<NSString *> *entries;
+    static NSMutableSet<NSString *> *seen;
+    @synchronized(NSProcessInfo.processInfo) {
+        if (!entries) {
+            entries = [NSMutableArray new]; seen = [NSMutableSet new];
+            tracePath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"theseus-keyboard-%d.log", getpid()]];
+        }
+        NSString *entry = [NSString stringWithUTF8String:stage ?: "unknown"];
+        if ([seen containsObject:entry] || entries.count >= 48) return;
+        [seen addObject:entry];
+        [entries addObject:[NSString stringWithFormat:@"%llu %@", (unsigned long long)NTKNowMS(), entry]];
+        [[entries componentsJoinedByString:@"\n"] writeToFile:tracePath atomically:YES
+                                                   encoding:NSUTF8StringEncoding error:NULL];
     }
 }
 
 __attribute__((constructor)) static void NTKLoad(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{ NTKInstall(); });
+    NTKRecordStage("dylib-loaded");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NTKStartNativeBackdrop();
+        NTKStartAppCoordinator();
+    });
 }

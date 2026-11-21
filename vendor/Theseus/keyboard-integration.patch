@@ -1,0 +1,101 @@
+diff --git a/vendor/Theseus/Sources/Core/TheseusView.swift b/vendor/Theseus/Sources/Core/TheseusView.swift
+index daa18ed..114517c 100644
+--- a/vendor/Theseus/Sources/Core/TheseusView.swift
++++ b/vendor/Theseus/Sources/Core/TheseusView.swift
+@@ -62,6 +62,15 @@ public class TheseusView: UIView {
+         didSet { renderer?.onPresent = onPresent }
+     }
+ 
++    // Keyboard integration only: the original shader/material passes remain untouched.
++    weak var ntkWindowSource: UIWindow? {
++        didSet { renderer?.ntkWindowSource = ntkWindowSource }
++    }
++    var ntkFramePresented: ((UInt64) -> Void)? {
++        didSet { renderer?.ntkFramePresented = ntkFramePresented }
++    }
++    var ntkRendererReady: Bool { renderer != nil }
++
+     /// Keeps a copy of each rendered frame so another glass view capturing
+     /// the tree sees this one as rendered, not as a flat veil.
+     public var providesCaptureSnapshot: Bool = false {
+@@ -394,6 +403,8 @@ public class TheseusView: UIView {
+         renderer?.configuration = configuration
+         renderer?.continuousUpdate = continuousUpdate
+         renderer?.onPresent = onPresent
++        renderer?.ntkWindowSource = ntkWindowSource
++        renderer?.ntkFramePresented = ntkFramePresented
+         renderer?.willCapture = captureWillBegin
+         renderer?.didCapture = captureDidEnd
+         renderer?.drawItemLayer = captureItemLayer
+diff --git a/vendor/Theseus/Sources/Rendering/TheseusRenderer.swift b/vendor/Theseus/Sources/Rendering/TheseusRenderer.swift
+index 8f03bd3..f4a2dc2 100644
+--- a/vendor/Theseus/Sources/Rendering/TheseusRenderer.swift
++++ b/vendor/Theseus/Sources/Rendering/TheseusRenderer.swift
+@@ -30,6 +30,9 @@ final class TheseusRenderer: NSObject {
+     private let texturePool: TexturePool
+     private var viewLayerCapture: ViewLayerCapture?
+     private var backgroundCaptureDraw: BackgroundCaptureDraw?
++    weak var ntkWindowSource: UIWindow? { didSet { setNeedsRender() } }
++    var ntkFramePresented: ((UInt64) -> Void)?
++    private lazy var ntkWindowCapture = NTKWindowCapture(device: context.device)
+     private let blurKernelCalculator: BlurKernelCalculator
+     private let frostCoarseKernel: BlurKernelCalculator
+     private let frostFillKernel: BlurKernelCalculator
+@@ -335,10 +338,22 @@ final class TheseusRenderer: NSObject {
+         }
+ 
+         let viewFrame = metalLayer.frame
+-        let captureRegion = calculateCaptureRegion(viewFrame: viewFrame, in: sourceView)
++        let captureRegion: CGRect
++        if let contentWindow = ntkWindowSource {
++            guard let host = hostView, let overlay = host.window,
++                  overlay !== contentWindow, overlay.screen === contentWindow.screen,
++                  overlay.windowScene === contentWindow.windowScene else { return false }
++            let rect = host.bounds.insetBy(dx: -drawPadding.x, dy: -drawPadding.y)
++            let inOverlay = host.convert(rect, to: overlay)
++            // UIView.convert alone is only valid within one UIWindow.
++            captureRegion = overlay.convert(inOverlay, to: contentWindow)
++        } else {
++            captureRegion = calculateCaptureRegion(viewFrame: viewFrame, in: sourceView)
++        }
+ 
+         let renderScale = currentRefractionQuality.renderScale
+ 
++        let ntkCapturedAtMS = NTKNowMS()
+         let sourceTexture: MTLTexture
+         var capturedSurface: IOSurface? = nil
+ 
+@@ -346,6 +361,12 @@ final class TheseusRenderer: NSObject {
+         willCapture?()
+         defer { didCapture?() }
+ 
++        if let contentWindow = ntkWindowSource {
++            guard let capture = ntkWindowCapture.capture(window: contentWindow,
++                    region: captureRegion, scale: renderScale) else { return false }
++            sourceTexture = capture.texture
++            lastBackdropColor = capture.meanColor
++        } else {
+         switch configuration.captureMethod {
+         case .surfaceBased:
+             guard let capture = getViewLayerCapture(),
+@@ -374,6 +395,7 @@ final class TheseusRenderer: NSObject {
+             sourceTexture = capture.texture
+             lastBackdropColor = capture.meanColor
+         }
++        }
+ 
+         let itemTexture = drawItemLayer.flatMap { renderItemLayer(region: captureRegion, scale: renderScale, sourceView: sourceView, draw: $0) }
+ 
+@@ -473,6 +495,12 @@ final class TheseusRenderer: NSObject {
+ 
+         commandBuffer.encodeSignalEvent(frameEvent, value: frameValue)
+ 
++        if let presented = ntkFramePresented {
++            // addCompletedHandler only proves GPU completion. Do not clear native yet.
++            drawable.addPresentedHandler { _ in
++                DispatchQueue.main.async { presented(ntkCapturedAtMS) }
++            }
++        }
+         let presentsWithTransaction = metalLayer.presentsWithTransaction
+         if !presentsWithTransaction {
+             commandBuffer.present(drawable)

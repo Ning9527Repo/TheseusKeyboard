@@ -62,6 +62,15 @@ public class TheseusView: UIView {
         didSet { renderer?.onPresent = onPresent }
     }
 
+    // Keyboard integration only: the original shader/material passes remain untouched.
+    weak var ntkWindowSource: UIWindow? {
+        didSet { renderer?.ntkWindowSource = ntkWindowSource }
+    }
+    var ntkFramePresented: ((UInt64) -> Void)? {
+        didSet { renderer?.ntkFramePresented = ntkFramePresented }
+    }
+    var ntkRendererReady: Bool { renderer != nil }
+
     /// Keeps a copy of each rendered frame so another glass view capturing
     /// the tree sees this one as rendered, not as a flat veil.
     public var providesCaptureSnapshot: Bool = false {
@@ -394,6 +403,8 @@ public class TheseusView: UIView {
         renderer?.configuration = configuration
         renderer?.continuousUpdate = continuousUpdate
         renderer?.onPresent = onPresent
+        renderer?.ntkWindowSource = ntkWindowSource
+        renderer?.ntkFramePresented = ntkFramePresented
         renderer?.willCapture = captureWillBegin
         renderer?.didCapture = captureDidEnd
         renderer?.drawItemLayer = captureItemLayer

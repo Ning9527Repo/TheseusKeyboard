@@ -1,4 +1,4 @@
-# Theseus Keyboard 0.1.0-test1 — RootHide arm64e
+# Theseus Keyboard 0.1.0-test2 — RootHide arm64e repair
 
 全新项目。只取 Theseus 原版 iOS27 TabBar 中央玻璃配置与材质曲线，挂载在系统键盘背景实例；不取 Tab、选中镜片、图标、文字或交互，不改按键和输入逻辑。
 
@@ -6,7 +6,8 @@
 
 ## 明确的实验边界
 
-- 当前背景源为 UIKBBackdropView，Theseus 使用 layer.render；iOS17 键盘独立进程，原生 backdrop 的实际跨窗口像素未证明可被读取，可能仅得到 veil/底色。
+- 修复版把 Theseus 的 source 改为当前前台 App 自有内容 UIWindow，使用 `drawHierarchy` 生成输入纹理；原版 shader/material 仍保留。InputUI 只在对应 App 成功呈现新帧后，以短租约清除 backdrop 的 effect/backgroundColor，超时自动恢复。
+- iOS17 键盘独立进程；远程键盘合成层是否一定露出 App overlay 仍需真机确认，若没有露出，修复版会安全恢复系统背景。
 - 本包为用户明确要求的真机测试，构建成功不等于玻璃外观验证通过。
 - 保留原生 backdrop，不做 PNG/截图伪造，不悄悄替换为别的材质。当前组合不保证等价原版一次处理。
 - 本版不启用常驻逐帧刷新；先测试背景挂载和实际外观。后方 App 连续动画不保证同步。
