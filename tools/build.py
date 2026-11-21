@@ -6,7 +6,7 @@ ROOT=Path(__file__).resolve().parents[1]
 BUILD=ROOT/'build'
 DIST=ROOT/'dist'
 PKG='com.ning.theseuskeyboard'
-VERSION='0.1.0-test2'
+VERSION='0.1.0-test3'
 DYLIB='TheseusKeyboard'
 
 def run(args):

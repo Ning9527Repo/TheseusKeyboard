@@ -1,4 +1,4 @@
-# Theseus Keyboard 0.1.0-test2 — experimental RootHide repair
+# Theseus Keyboard 0.1.0-test3 — native backdrop placement repair
 
 Theseus TabBar's iOS27 central background glass material, adapted to the native system keyboard background. No tab items, lens, icons or keyboard input changes. This is a fresh project, not a continuation of the deleted project.
 

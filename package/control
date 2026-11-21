@@ -1,6 +1,6 @@
 Package: com.ning.theseuskeyboard
 Name: Theseus Keyboard (Test)
-Version: 0.1.0-test2
+Version: 0.1.0-test3
 Architecture: iphoneos-arm64e
 Description: Experimental Theseus tab bar glass material on the system keyboard background. No keyboard keys or input logic changed.
 Section: Tweaks

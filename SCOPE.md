@@ -13,6 +13,6 @@
 - 不承诺跨进程 UIKit layer capture 能取得其他 App 的真实合成画面。
 - 本次用户明确授权「构建，我来测试」「只要64e」「用小号」：使用 Ning9527Repo 新建独立仓库，源码同步 main 核实后，仅触发一次 64e / RootHide 实验构建。未授权安装、注入、注销或上源。
 
-状态：上游代码与独立材质适配草稿已获取，ObjC 挂载层仅通过双架构语法检查，Swift / Metal 未编译，未构建或真机验证。
+状态：test1/test2 已完成构建并经用户真机确认无效；test2 日志确认 App-owned overlay 错在远程键盘合成层后面。test3 已将可见玻璃改为 InputUI 内 `UIKBBackdropView.contentView` 的 index 0，完成 ObjC 严格语法、状态边界和 Hook 幂等测试；本轮用户已授权构建，尚未构建或真机验证。
 
-采样阻断：iOS 17 键盘主要运行在独立进程；`sourceView = UIKBBackdropView` 加 `layer.render(in:)` 不证明能取得后方 App 的真实合成像素。排除自建 surface 只能防自采样，不能补出跨进程背景。因此当前挂载层只能标记实验，不能当完整 Theseus 键盘实现宣称成功。用户在明确得知限制后要求出测试包，故本次按单次授权构建供其真机验证；不能将编译通过当作真实背景采样已成立。不擅自降级为原生模糊加装饰高光，也不用 PNG 替代用户指定的原版玻璃。
+采样边界：本地 keyboard backdrop 的 `layer.render(in:)` 仍不保证取得 iOS17 原生 blur 的真实合成像素；失败时不清空原生背景。保留 App 端采样作为辅助，不再把 App-owned UIWindow 当作 InputUI 可见层。不用 PNG、自绘或材质近似冒充原版 Theseus。
