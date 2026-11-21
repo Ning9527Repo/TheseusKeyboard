@@ -90,9 +90,9 @@ public final class NTKGlassBackground: UIView {
     @objc(attachToNativeBackdrop:sourceView:)
     public func attach(to backdrop: UIView, sourceView: UIView) {
         precondition(Thread.isMainThread)
-        guard let effectView = backdrop as? UIVisualEffectView,
-              let host = effectView.contentView,
-              host !== self, !host.isDescendant(of: self) else { return }
+        guard let effectView = backdrop as? UIVisualEffectView else { return }
+        let host = effectView.contentView
+        guard host !== self, !host.isDescendant(of: self) else { return }
         glass.ntkWindowSource = nil
         // Capture the keyboard window tree, excluding the surface itself. The
         // backdrop's own effect is compensated by Theseus; keys remain below
