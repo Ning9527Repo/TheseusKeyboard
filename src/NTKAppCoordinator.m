@@ -258,6 +258,7 @@ static UIWindow *NTKContentWindow(void) {
 @end
 
 void NTKStartAppCoordinator(void) {
+    if (NTKIsKeyboardProcess()) return;
     static NTKAppCoordinator *coordinator;
     static dispatch_once_t once;
     dispatch_once(&once, ^{

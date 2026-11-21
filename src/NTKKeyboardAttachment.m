@@ -36,6 +36,19 @@ static NSString *NTKClientName(NSString *bundle, NSString *prefix) {
 }
 NSString *NTKClientLeaseName(NSString *bundle) { return NTKClientName(bundle, @NTK_LEASE_NAME); }
 NSString *NTKClientAckName(NSString *bundle) { return NTKClientName(bundle, @NTK_ACK_NAME); }
+BOOL NTKIsKeyboardProcess(void) {
+    NSString *name = NSProcessInfo.processInfo.processName.lowercaseString;
+    NSString *identifier = NSBundle.mainBundle.bundleIdentifier.lowercaseString;
+    NSString *executable = NSBundle.mainBundle.infoDictionary[@"CFBundleExecutable"];
+    executable = executable.lowercaseString;
+    // Do not infer from UIKit class availability: those classes are present in
+    // ordinary apps too. The service identity is the hard boundary.
+    return [identifier isEqualToString:@"com.apple.inputui"] ||
+           [name isEqualToString:@"inputui"] ||
+           [name isEqualToString:@"inputservice"] ||
+           [name containsString:@"keyboardservice"] ||
+           [executable isEqualToString:@"inputui"];
+}
 
 void NTKRecordStage(const char *stage) {
     static os_log_t log;

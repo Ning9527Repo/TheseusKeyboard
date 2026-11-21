@@ -36,6 +36,8 @@ renderer=(r/'vendor/Theseus/Sources/Rendering/TheseusRenderer.swift').read_text(
 assert 'drawable.addPresentedHandler' in renderer
 assert 'overlay.convert(inOverlay, to: contentWindow)' in renderer
 assert 'NTKCurrentKeyboardClient' in native
+assert 'attachToNativeBackdrop:sourceView:' in (r/'src/NTKGlassBackground.swift').read_text()
+assert 'host.insertSubview(self, at: 0)' in (r/'src/NTKGlassBackground.swift').read_text()
 control=(r/'package/control').read_text()
 assert 'Architecture: iphoneos-arm64e\n' in control
 assert 'Maintainer: Ning&Vadim Drobinin\n' in control

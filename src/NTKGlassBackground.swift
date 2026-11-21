@@ -84,6 +84,32 @@ public final class NTKGlassBackground: UIView {
         NTKRecordStage("content-window-attached")
     }
 
+    /// InputUI fallback: put the surface in the actual backdrop tree, behind
+    /// its content. This is the visible path for remote-keyboard composition;
+    /// the App-owned UIWindow path cannot outrank UIRemoteKeyboardWindow.
+    @objc(attachToNativeBackdrop:sourceView:)
+    public func attach(to backdrop: UIView, sourceView: UIView) {
+        precondition(Thread.isMainThread)
+        guard let effectView = backdrop as? UIVisualEffectView,
+              let host = effectView.contentView,
+              host !== self, !host.isDescendant(of: self) else { return }
+        glass.ntkWindowSource = nil
+        // Capture the keyboard window tree, excluding the surface itself. The
+        // backdrop's own effect is compensated by Theseus; keys remain below
+        // the foreground content and are not used as App pixels.
+        glass.sourceView = sourceView.window ?? sourceView.superview ?? sourceView
+        backgroundHost = host
+        if superview !== host {
+            host.insertSubview(self, at: 0)
+        } else {
+            host.sendSubviewToBack(self)
+        }
+        frame = host.bounds
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        setNeedsLayout()
+        NTKRecordStage("native-backdrop-surface-attached")
+    }
+
     @objc(setPresentedHandler:)
     public func setPresentedHandler(_ handler: @escaping (UInt64) -> Void) {
         glass.ntkFramePresented = handler

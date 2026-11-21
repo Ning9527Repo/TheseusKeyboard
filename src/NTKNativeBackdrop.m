@@ -14,12 +14,13 @@
 @end
 
 static char kNTKNativeKey;
+static char kNTKGlassKey;
 static NSHashTable<UIVisualEffectView *> *gNTKBackdrops;
 static dispatch_source_t gNTKNativeTimer;
 static int gNTKLeaseToken = -1, gNTKAckToken = -1;
 static NSString *gNTKClient, *gNTKAckName;
-static BOOL gNTKInstalled, gNTKNativeMutating;
-static NSUInteger gNTKStyleDepth;
+static BOOL gNTKInstalled, gNTKNativeMutating, gNTKSurfaceMutating;
+static NSUInteger gNTKStyleDepth, gNTKRetryAttempts;
 static atomic_bool gNTKInstallQueued;
 static void (*gNTKLayoutOrig)(id, SEL);
 static void (*gNTKMoveOrig)(id, SEL);
@@ -27,8 +28,13 @@ static void (*gNTKStyleOrig)(id, SEL, NSInteger);
 static void (*gNTKEffectOrig)(id, SEL, UIVisualEffect *);
 static void (*gNTKColorOrig)(id, SEL, UIColor *);
 
+static void NTKTryInstallBackdrop(void);
+static void NTKScheduleInstallRetry(void);
+static void NTKRefreshAllNative(void);
+
 static BOOL NTKWriteNativeAck(uint64_t state) {
-    return gNTKAckToken >= 0 && notify_set_state(gNTKAckToken, state) == NOTIFY_STATUS_OK &&
+    return gNTKAckToken >= 0 && gNTKAckName.length &&
+        notify_set_state(gNTKAckToken, state) == NOTIFY_STATUS_OK &&
         notify_post(gNTKAckName.UTF8String) == NOTIFY_STATUS_OK;
 }
 
@@ -43,8 +49,17 @@ static BOOL NTKBackdropSupported(UIVisualEffectView *backdrop) {
                           screen.size.width, screen.size.height);
 }
 
+static BOOL NTKLocalBackdropSupported(UIVisualEffectView *backdrop) {
+    UIWindow *window = backdrop.window;
+    CGRect bounds = backdrop.bounds;
+    if (!window || window.hidden || backdrop.hidden || backdrop.alpha < 0.5 ||
+        bounds.size.width < 100 || bounds.size.height < 40 ||
+        !isfinite(bounds.size.width) || !isfinite(bounds.size.height)) return NO;
+    return YES;
+}
+
 static void NTKRestoreBackdrop(UIVisualEffectView *view, NTKNativeState *state) {
-    if (!state.replaced) return;
+    if (!state || !state.replaced) return;
     gNTKNativeMutating = YES;
     @try {
         view.effect = state.effect;
@@ -54,7 +69,44 @@ static void NTKRestoreBackdrop(UIVisualEffectView *view, NTKNativeState *state) 
     NTKRecordStage("native-restored");
 }
 
+static id NTKObjectGetter(id object, SEL selector) {
+    if (!object || ![object respondsToSelector:selector]) return nil;
+    NSMethodSignature *sig = [object methodSignatureForSelector:selector];
+    if (!sig || sig.numberOfArguments != 2 || sig.methodReturnType[0] != '@') return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static BOOL NTKEnsureLocalSurface(UIVisualEffectView *backdrop) {
+    if (gNTKSurfaceMutating || !NTKLocalBackdropSupported(backdrop)) return NO;
+    id surface = objc_getAssociatedObject(backdrop, &kNTKGlassKey);
+    if (!surface) {
+        Class cls = NSClassFromString(@"NTKGlassBackground");
+        SEL factory = @selector(makeSurface);
+        if (!cls || ![cls respondsToSelector:factory]) {
+            NTKRecordStage("local-surface-class-unavailable"); return NO;
+        }
+        surface = ((id (*)(id, SEL))objc_msgSend)(cls, factory);
+        if (!surface) { NTKRecordStage("local-surface-create-failed"); return NO; }
+        objc_setAssociatedObject(backdrop, &kNTKGlassKey, surface, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NTKRecordStage("local-surface-created");
+    }
+    gNTKSurfaceMutating = YES;
+    @try {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(surface,
+            @selector(attachToNativeBackdrop:sourceView:), backdrop, backdrop);
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(surface, @selector(setSuspended:), NO);
+        ((void (*)(id, SEL))objc_msgSend)(surface, @selector(nativeBackgroundDidChange));
+    } @finally { gNTKSurfaceMutating = NO; }
+    return YES;
+}
+
 static BOOL NTKRefreshBackdrop(UIVisualEffectView *view, uint64_t lease, uint64_t now) {
+    // The visible surface belongs inside the keyboard backdrop window. The
+    // App-owned UIWindow experiment is not allowed to clear this material.
+    if (NTKEnsureLocalSurface(view)) {
+        NTKRestoreBackdrop(view, objc_getAssociatedObject(view, &kNTKNativeKey));
+        return NO;
+    }
     NTKNativeState *state = objc_getAssociatedObject(view, &kNTKNativeKey);
     if (!state) {
         state = [NTKNativeState new];
@@ -73,31 +125,18 @@ static BOOL NTKRefreshBackdrop(UIVisualEffectView *view, uint64_t lease, uint64_
     }
     gNTKNativeMutating = YES;
     @try {
-        // Only the backdrop's material. Never hide a view or change contentView/keys.
         if (view.effect) view.effect = nil;
         if (![view.backgroundColor isEqual:UIColor.clearColor]) view.backgroundColor = UIColor.clearColor;
     } @finally { gNTKNativeMutating = NO; }
     return YES;
 }
 
-static id NTKObjectGetter(id object, SEL selector) {
-    if (!object || ![object respondsToSelector:selector]) return nil;
-    NSMethodSignature *sig = [object methodSignatureForSelector:selector];
-    if (!sig || sig.numberOfArguments != 2 || sig.methodReturnType[0] != '@') return nil;
-    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
-}
-
 static NSString *NTKCurrentKeyboardClient(void) {
-    if (![NSProcessInfo.processInfo.processName isEqualToString:@"InputUI"])
-        return NTKClientLeaseName(NSBundle.mainBundle.bundleIdentifier) ? NSBundle.mainBundle.bundleIdentifier : nil;
-    // Public iOS17 runtime header declares activeInstance and _remoteAppId.
-    // Missing or changed ABI disables native clearing; never guess another client.
+    if (!NTKIsKeyboardProcess()) return nil;
     id keyboard = NTKObjectGetter(NSClassFromString(@"UIKeyboardImpl"), NSSelectorFromString(@"activeInstance"));
     id client = NTKObjectGetter(keyboard, NSSelectorFromString(@"_remoteAppId"));
     return NTKClientLeaseName(client) ? client : nil;
 }
-
-static void NTKRefreshAllNative(void);
 
 static BOOL NTKSelectClient(NSString *client) {
     if (client && [client isEqual:gNTKClient] && gNTKLeaseToken >= 0 && gNTKAckToken >= 0) return YES;
@@ -108,7 +147,7 @@ static BOOL NTKSelectClient(NSString *client) {
     if (gNTKAckToken >= 0) notify_cancel(gNTKAckToken);
     gNTKLeaseToken = gNTKAckToken = -1; gNTKClient = nil; gNTKAckName = nil;
     NSString *leaseName = NTKClientLeaseName(client), *ackName = NTKClientAckName(client);
-    if (!leaseName || !ackName) { NTKRecordStage("native-input-client-unavailable"); return NO; }
+    if (!leaseName || !ackName) return NO;
     if (notify_register_check(ackName.UTF8String, &gNTKAckToken) != NOTIFY_STATUS_OK) {
         gNTKAckToken = -1; return NO;
     }
@@ -126,32 +165,21 @@ static void NTKRefreshAllNative(void) {
     BOOL clientReady = NTKSelectClient(NTKCurrentKeyboardClient());
     if (!clientReady || gNTKLeaseToken < 0 || notify_get_state(gNTKLeaseToken, &lease) != NOTIFY_STATUS_OK) lease = 0;
     BOOL any = NO;
-    for (UIVisualEffectView *view in gNTKBackdrops.allObjects) {
+    for (UIVisualEffectView *view in gNTKBackdrops.allObjects)
         any |= NTKRefreshBackdrop(view, lease, now);
-    }
     if (any) {
         uint64_t ack = NTKMakeLease(now, (uint32_t)NTKLeaseOwner(lease));
         if (!NTKWriteNativeAck(ack)) {
             for (UIVisualEffectView *view in gNTKBackdrops.allObjects)
                 NTKRestoreBackdrop(view, objc_getAssociatedObject(view, &kNTKNativeKey));
-            NTKRecordStage("native-ack-failed-restored");
-        }
-        if (!gNTKNativeTimer) {
-            gNTKNativeTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-            dispatch_source_set_timer(gNTKNativeTimer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC * 200),
-                                     NSEC_PER_MSEC * 200, NSEC_PER_MSEC * 30);
-            dispatch_source_set_event_handler(gNTKNativeTimer, ^{ NTKRefreshAllNative(); });
-            dispatch_resume(gNTKNativeTimer);
         }
     } else if (gNTKNativeTimer) {
-        dispatch_source_cancel(gNTKNativeTimer);
-        gNTKNativeTimer = nil;
-        NTKWriteNativeAck(0);
+        dispatch_source_cancel(gNTKNativeTimer); gNTKNativeTimer = nil; NTKWriteNativeAck(0);
     }
 }
 
 static void NTKObserveBackdrop(UIVisualEffectView *view) {
-    if (![NSThread isMainThread] || gNTKNativeMutating || gNTKStyleDepth) return;
+    if (![NSThread isMainThread] || gNTKNativeMutating || gNTKStyleDepth || gNTKSurfaceMutating) return;
     [gNTKBackdrops addObject:view];
     NTKRefreshAllNative();
 }
@@ -165,10 +193,7 @@ static void NTKNativeMove(id self, SEL cmd) {
     NTKObserveBackdrop(self);
 }
 static void NTKNativeStyle(id self, SEL cmd, NSInteger style) {
-    if (gNTKNativeMutating) {
-        if (gNTKStyleOrig) gNTKStyleOrig(self, cmd, style);
-        return;
-    }
+    if (gNTKNativeMutating) { if (gNTKStyleOrig) gNTKStyleOrig(self, cmd, style); return; }
     ++gNTKStyleDepth;
     @try {
         NTKRestoreBackdrop(self, objc_getAssociatedObject(self, &kNTKNativeKey));
@@ -200,12 +225,8 @@ static BOOL NTKVoidMethod(Class cls, SEL selector, NSUInteger arguments, const c
 static void NTKReplaceLocal(Class cls, SEL selector, IMP replacement, IMP *original) {
     Method inherited = class_getInstanceMethod(cls, selector);
     IMP current = method_getImplementation(inherited);
-    // Materialize an override when inherited; never change UIVisualEffectView/UIView globally.
-    if (class_addMethod(cls, selector, replacement, method_getTypeEncoding(inherited))) {
-        *original = current;
-    } else {
-        *original = method_setImplementation(class_getInstanceMethod(cls, selector), replacement);
-    }
+    if (class_addMethod(cls, selector, replacement, method_getTypeEncoding(inherited))) *original = current;
+    else *original = method_setImplementation(class_getInstanceMethod(cls, selector), replacement);
 }
 
 static void NTKDiscoverBackdrops(UIView *root, Class cls) {
@@ -216,16 +237,12 @@ static void NTKDiscoverBackdrops(UIView *root, Class cls) {
 static void NTKTryInstallBackdrop(void) {
     if (gNTKInstalled) return;
     Class cls = NSClassFromString(@"UIKBBackdropView");
-    if (!cls || ![cls isSubclassOfClass:UIVisualEffectView.class]) {
-        NTKRecordStage("native-waiting-for-backdrop-class"); return;
-    }
+    if (!cls || ![cls isSubclassOfClass:UIVisualEffectView.class]) return;
     if (!NTKVoidMethod(cls, @selector(layoutSubviews), 2, NULL) ||
         !NTKVoidMethod(cls, @selector(didMoveToWindow), 2, NULL) ||
         !NTKVoidMethod(cls, @selector(setEffect:), 3, @encode(id)) ||
-        !NTKVoidMethod(cls, @selector(setBackgroundColor:), 3, @encode(id))) {
-        NTKRecordStage("native-hook-abi-rejected"); return;
-    }
-    gNTKInstalled = YES; // All retries/late image callbacks stop before replacing orig slots.
+        !NTKVoidMethod(cls, @selector(setBackgroundColor:), 3, @encode(id))) return;
+    gNTKInstalled = YES;
     NTKReplaceLocal(cls, @selector(layoutSubviews), (IMP)NTKNativeLayout, (IMP *)&gNTKLayoutOrig);
     NTKReplaceLocal(cls, @selector(didMoveToWindow), (IMP)NTKNativeMove, (IMP *)&gNTKMoveOrig);
     NTKReplaceLocal(cls, @selector(setEffect:), (IMP)NTKNativeEffect, (IMP *)&gNTKEffectOrig);
@@ -241,23 +258,29 @@ static void NTKTryInstallBackdrop(void) {
     NTKRecordStage("native-hooks-installed");
 }
 
+static void NTKScheduleInstallRetry(void) {
+    if (gNTKInstalled || gNTKRetryAttempts++ >= 40) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC * 250), dispatch_get_main_queue(), ^{
+        NTKTryInstallBackdrop();
+        NTKScheduleInstallRetry();
+    });
+}
+
 static void NTKImageAdded(const struct mach_header *header, intptr_t slide) {
     (void)header; (void)slide;
     if (atomic_exchange(&gNTKInstallQueued, true)) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        atomic_store(&gNTKInstallQueued, false);
-        NTKTryInstallBackdrop();
+        atomic_store(&gNTKInstallQueued, false); NTKTryInstallBackdrop();
     });
 }
 
 void NTKStartNativeBackdrop(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        // Native UIKBBackdropView mutation belongs only to the keyboard service.
-        // App processes load the same dylib solely for the content-window renderer.
-        if (![NSProcessInfo.processInfo.processName isEqualToString:@"InputUI"]) return;
+        if (!NTKIsKeyboardProcess()) return;
         gNTKBackdrops = [NSHashTable weakObjectsHashTable];
         _dyld_register_func_for_add_image(NTKImageAdded);
         NTKTryInstallBackdrop();
+        NTKScheduleInstallRetry();
     });
 }
