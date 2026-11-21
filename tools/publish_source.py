@@ -22,13 +22,14 @@ subprocess.run(['git','init','-b','main'],check=True)
 git('config','user.name','Ning');git('config','user.email','Ning9527Repo@users.noreply.github.com')
 git('add','.');git('commit','-m','Initial Theseus keyboard arm64e test sources [skip ci]')
 head=git('rev-parse','HEAD')
-ask=R/'.git-askpass-auth'
-ask.write_text('#!/bin/sh\ncase "$1" in *sername*) printf "%s\\n" x-access-token;; *) printf "%s\\n" "$GITHUB";; esac\n');ask.chmod(0o700)
-try:
- git('remote','add','origin','https://github.com/'+REPO+'.git')
- env=os.environ.copy();env['GIT_ASKPASS']=str(ask);env['GIT_TERMINAL_PROMPT']='0'
- subprocess.run(['git','-c','credential.helper=','push','-u','origin','main'],check=True,env=env)
-finally:ask.unlink(missing_ok=True)
+import base64
+git('remote','add','origin','https://github.com/'+REPO+'.git')
+env=os.environ.copy();env['GIT_TERMINAL_PROMPT']='0'
+env['GIT_CONFIG_COUNT']='2'
+env['GIT_CONFIG_KEY_0']='http.https://github.com/.extraheader'
+env['GIT_CONFIG_VALUE_0']='Authorization: Basic '+base64.b64encode(('x-access-token:'+env['GITHUB']).encode()).decode()
+env['GIT_CONFIG_KEY_1']='credential.helper';env['GIT_CONFIG_VALUE_1']=''
+subprocess.run(['git','push','-u','origin','main'],check=True,env=env)
 remote=api('/repos/'+REPO+'/git/ref/heads/main')['object']['sha'];assert remote==head
 commit=api('/repos/'+REPO+'/git/commits/'+remote)
 tree=api('/repos/'+REPO+'/git/trees/'+commit['tree']['sha']+'?recursive=1')
