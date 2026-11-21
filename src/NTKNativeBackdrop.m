@@ -277,7 +277,10 @@ static void NTKImageAdded(const struct mach_header *header, intptr_t slide) {
 void NTKStartNativeBackdrop(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        if (!NTKIsKeyboardProcess()) return;
+        // The dylib is filtered into UIKit hosts. Install the class-local
+        // override everywhere; only a process containing a real
+        // UIKBBackdropView instance can create the local surface. This avoids
+        // relying on a private service executable name that differs on iOS17.
         gNTKBackdrops = [NSHashTable weakObjectsHashTable];
         _dyld_register_func_for_add_image(NTKImageAdded);
         NTKTryInstallBackdrop();

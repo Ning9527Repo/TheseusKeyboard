@@ -1,5 +1,6 @@
 #import "NTKRuntime.h"
 #import <notify.h>
+#import <objc/message.h>
 #import <unistd.h>
 
 @protocol NTKSurface <NSObject>
@@ -20,6 +21,10 @@
     (void)point; (void)event; return nil;
 }
 @end
+
+@class NTKAppCoordinator;
+static NTKAppCoordinator *gNTKCoordinator;
+static NSUInteger gNTKCoordinatorAttempts;
 
 @interface NTKAppCoordinator : NSObject
 @property(nonatomic, strong) NTKPassThroughWindow *overlay;
@@ -257,17 +262,39 @@ static UIWindow *NTKContentWindow(void) {
 }
 @end
 
+static BOOL NTKAppCoordinatorEligible(void) {
+    NSString *process = NSProcessInfo.processInfo.processName.lowercaseString;
+    NSString *identifier = NSBundle.mainBundle.bundleIdentifier.lowercaseString;
+    if (NTKIsKeyboardProcess() || NTKHasKeyboardRuntimeObjects() || [process isEqualToString:@"springboard"] ||
+        [identifier isEqualToString:@"com.apple.inputui"] ||
+        [NSBundle.mainBundle.bundlePath.pathExtension.lowercaseString isEqualToString:@"appex"] ||
+        ![NSBundle.mainBundle.infoDictionary[@"CFBundlePackageType"] isEqual:@"APPL"]) return NO;
+    return NTKContentWindow() != nil;
+}
+
+static void NTKStartAppCoordinatorRetry(void);
+
 void NTKStartAppCoordinator(void) {
-    if (NTKIsKeyboardProcess()) return;
-    static NTKAppCoordinator *coordinator;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSString *process = NSProcessInfo.processInfo.processName;
-        if ([process isEqualToString:@"InputUI"] || [process isEqualToString:@"SpringBoard"] ||
-            [NSBundle.mainBundle.bundlePath.pathExtension isEqualToString:@"appex"] ||
-            !NSBundle.mainBundle.infoDictionary[@"CFBundlePackageType"] ||
-            ![NSBundle.mainBundle.infoDictionary[@"CFBundlePackageType"] isEqual:@"APPL"]) return;
-        coordinator = [NTKAppCoordinator new];
-        NTKRecordStage(coordinator ? "content-coordinator-ready" : "content-notify-unavailable");
+        if (!NTKAppCoordinatorEligible()) {
+            NTKRecordStage("content-coordinator-deferred");
+            NTKStartAppCoordinatorRetry();
+            return;
+        }
+        gNTKCoordinator = [NTKAppCoordinator new];
+        NTKRecordStage(gNTKCoordinator ? "content-coordinator-ready" : "content-notify-unavailable");
+    });
+}
+
+static void NTKStartAppCoordinatorRetry(void) {
+    if (gNTKCoordinator || gNTKCoordinatorAttempts++ >= 40) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC * 250), dispatch_get_main_queue(), ^{
+        if (NTKAppCoordinatorEligible()) {
+            gNTKCoordinator = [NTKAppCoordinator new];
+            NTKRecordStage(gNTKCoordinator ? "content-coordinator-ready" : "content-notify-unavailable");
+        } else {
+            NTKStartAppCoordinatorRetry();
+        }
     });
 }

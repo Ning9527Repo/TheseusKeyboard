@@ -9,5 +9,6 @@
 NSString *NTKClientLeaseName(NSString *bundleIdentifier);
 NSString *NTKClientAckName(NSString *bundleIdentifier);
 BOOL NTKIsKeyboardProcess(void);
+BOOL NTKHasKeyboardRuntimeObjects(void);
 void NTKStartAppCoordinator(void);
 void NTKStartNativeBackdrop(void);
